@@ -19,9 +19,23 @@ from winrm import protocol
 from provisioningserver.logger import get_maas_logger
 maaslog = get_maas_logger("drivers.power.hyperv")
 
+########## https://github.com/diyan/pywinrm/issues/269
+import logging
+class SuppressFilter(logging.Filter):
+    def filter(self, record):
+        return 'wsman' not in record.getMessage()
+
+try:
+    from urllib3.connectionpool import log
+    log.addFilter(SuppressFilter())
+except:
+    pass
+##########
+
 AUTH_BASIC = "basic"
 AUTH_KERBEROS = "kerberos"
 AUTH_CERTIFICATE = "certificate"
+AUTH_NTLM = "ntlm"
 
 DEFAULT_PORT_HTTP = 5985
 DEFAULT_PORT_HTTPS = 5986
@@ -31,9 +45,9 @@ CODEPAGE_UTF8 = 65001
 AUTH_TRANSPORT_MAP = {
     AUTH_BASIC: 'plaintext',
     AUTH_KERBEROS: 'kerberos',
-    AUTH_CERTIFICATE: 'ssl'
+    AUTH_CERTIFICATE: 'ssl',
+    AUTH_NTLM: 'ntlm',
 }
-
 
 VM_RUNNING = "Running"
 VM_PAUSED = "Paused"
@@ -66,7 +80,7 @@ class WinRM(object):
     def _protocol(self, username, password):
         protocol.Protocol.DEFAULT_TIMEOUT = "PT3600S"
         p = protocol.Protocol(endpoint=self._url,
-                              transport=AUTH_TRANSPORT_MAP[AUTH_BASIC],
+                              transport=AUTH_TRANSPORT_MAP[AUTH_NTLM],
                               username=username,
                               password=password,
                               server_cert_validation='ignore')
@@ -75,19 +89,22 @@ class WinRM(object):
     def _run_command(self, cmd):
         if type(cmd) is not list:
             raise ValueError("command must be a list")
-        maaslog.warning("HV run cmd: %s", cmd)
+        
+        maaslog.info("HV run cmd: %s", cmd)
+        shell_id = None
         try:
-            shell_id = self.protocol.open_shell(codepage=CODEPAGE_UTF8)
+            shell_id = self.protocol.open_shell()
         except:
             maaslog.warning("HV crapat: %s", sys.exc_info()[0])
+ 
         command_id = self.protocol.run_command(shell_id, cmd[0], cmd[1:])
         std_out, std_err, status_code = self.protocol.get_command_output(shell_id, command_id)
         self.protocol.cleanup_command(shell_id, command_id)
-
         self.protocol.close_shell(shell_id)
 
         if status_code:  
             raise HypervCmdError("Failed to run command: %s. Error message: %s" % (" ".join(cmd), std_err))
+        
         return std_out
 
     def run_command(self, command):
@@ -119,10 +136,10 @@ class WinRM(object):
         url = self._url
 
 
-def power_state_hyperv(poweraddr, machine, username, password):
+def power_state_hyperv(poweraddr, machine, username, password, use_ssl=True):
     """Return the power state for the VM using WinRM."""
 
-    conn = WinRM(poweraddr, username, password)
+    conn = WinRM(poweraddr, username, password, use_ssl)
     state = conn.get_vm_state(machine)
     maaslog.warning("hv: %s", state)
     maaslog.warning(VM_STATE_TO_POWER_STATE)
@@ -132,10 +149,10 @@ def power_state_hyperv(poweraddr, machine, username, password):
         raise HypervCmdError('Unknown state: %s' % state)
 
 
-def power_control_hyperv(poweraddr, machine, power_change, username, password):
+def power_control_hyperv(poweraddr, machine, power_change, username, password, use_ssl=True):
     """Power controls a VM using WinRM."""
 
-    conn = WinRM(poweraddr, username, password)
+    conn = WinRM(poweraddr, username, password, use_ssl)
     state = conn.get_vm_state(machine)
     maaslog.warning("HV status: %s", state)
 
